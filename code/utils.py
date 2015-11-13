@@ -1,4 +1,5 @@
 # utils
+# Mark Kindig
 # Utility functions for handling data
 #
 # Author:   Benjamin Bengfort <bbengfort@districtdatalabs.com>
@@ -11,62 +12,46 @@
 
 """
 Utility functions for handling data
+Updated from Machine Learning/Wheat Classification iPython Notebook
 """
 
 ##########################################################################
 ## Imports
 ##########################################################################
 
+# Imports for prepping dataset
 import os
 import csv
 import time
 import json
+import pickle
 import numpy as np
+import pandas as pd
 
 from sklearn.datasets.base import Bunch
+
+# Imports for Classification
+from sklearn import metrics
+from sklearn import cross_validation
+from sklearn.cross_validation import KFold
+
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import BernoulliRBM
+
 
 ##########################################################################
 ## Module Constants
 ##########################################################################
 
-SKL_DATA = "SCIKIT_LEARN_DATA"
-BASE_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+BASE_DIR = os.path.abspath(os.path.join(".",".."))
+DATA_DIR = os.path.abspath(os.path.join(".","..","data"))
 CODE_DIR = os.path.join(BASE_DIR, "code")
-
-##########################################################################
-## Helper Functions
-##########################################################################
-
-def timeit(func):
-    """
-    Returns how long a function took to execute, along with the output
-    """
-
-    def wrapper(*args, **kwargs):
-        start  = time.time()
-        result = func(*args, **kwargs)
-        return result, time.time() - start
-
-    return timeit
 
 ##########################################################################
 ## Dataset Loading
 ##########################################################################
-
-
-def get_data_home(data_home=None):
-    """
-    Returns the path of the data directory
-    """
-    if data_home is None:
-        data_home = os.environ.get(SKL_DATA, DATA_DIR)
-
-    data_home = os.path.expanduser(data_home)
-    if not os.path.exists(data_home):
-        os.makedirs(data_home)
-
-    return data_home
 
 
 def load_data(path, descr=None, target_index=-1):
@@ -89,7 +74,7 @@ def load_data(path, descr=None, target_index=-1):
         path
             - README.md     # The file to load into DESCR
             - meta.json     # A file containing metadata to load
-            - dataset.txt   # The numpy loadtxt file
+            - winequality-red/white.csv   # The downloaded input file (split?)
             - dataset.csv   # The pandas read_csv file
 
     You can specify another descr, another feature_names, and whether or
@@ -97,7 +82,14 @@ def load_data(path, descr=None, target_index=-1):
     target, which by default is the last item in the row (-1)
     """
 
-    root          = os.path.join(get_data_home(), path)
+    root          = os.path.join(DATA_DIR, path)
+
+    # Show the contents of the data directory
+    for name in os.listdir(root):
+        if name.startswith("."): continue
+        print "- {}".format(name)
+
+    # Construct the 'BUnch' for the Wine dataset
     filenames     = {
         'meta': os.path.join(root, 'meta.json'),
         'rdme': os.path.join(root, 'README.md'),
@@ -108,23 +100,28 @@ def load_data(path, descr=None, target_index=-1):
     feature_names = None
     DESCR         = None
 
+    # Load the meta data from the meta json
     with open(filenames['meta'], 'r') as f:
         meta = json.load(f)
         target_names  = meta['target_names']
         feature_names = meta['feature_names']
 
+    # Load the description from the README
     with open(filenames['rdme'], 'r') as f:
         DESCR = f.read()
 
+    # Load the dataset from the text/csv file.
     dataset = np.loadtxt(filenames['data'])
-    data    = None
-    target  = None
+    
+    # Extract the target from the data
+    data    = dataset[:, 0:-1]
+    target  = dataset[:, -1]
 
-    # Target assumed to be either last or first row
-    if target_index == -1:
-        data   = dataset[:, 0:-1]
+    # Target assumed to be either last or first column
+    if target_index == -1:  
+        data   = dataset[:, 0:-1]  # In last column
         target = dataset[:, -1]
-    elif target_index == 0:
+    elif target_index == 0:    # In first column
         data   = dataset[:, 1:]
         target = dataset[:, 0]
     else:
@@ -137,21 +134,44 @@ def load_data(path, descr=None, target_index=-1):
                  feature_names=feature_names,
                  DESCR=DESCR)
 
+def load_wine():
+    return load_data('wine')
 
-def load_wheat():
-    return load_data('wheat')
+# Classification function
+def fit_and_evaluate(dataset, model, label, **kwargs):
+    # Try NNs, SVMs
+    start = time.time()
+    scores = {'precision':[], 'recall':[], 'accuracy':[], 'f1':[]}
 
 
-def load_energy():
-    """
-    Loads the energy data set by creates a target set of Y1 and Y2 and makes
-    target a function that can select between the two variables.
-    """
-    data = load_data('energy')
-    data._target_set = {'Y2': data.target}
-    data._target_set['Y1'] = data.data[:, -1]
-    data.data = data.data[:, 0:-1]
+    for train, test in KFold(dataset.data.shape[0], n_folds=12, shuffle=True):
+        X_train, X_test = dataset.data[train], dataset.data[test]
+        y_train, y_test = dataset.target[train], dataset.target[test]
+        
+        estimator = model(**kwargs)
+        estimator.fit(X_train, y_train)
+        
+        expected  = y_test
+        predicted = estimator.predict(X_test)
+        
+        # Append our scores to the tracker
+        scores['precision'].append(metrics.precision_score(expected, predicted, average="weighted"))
+        scores['recall'].append(metrics.recall_score(expected, predicted, average="weighted"))
+        scores['accuracy'].append(metrics.accuracy_score(expected, predicted))
+        scores['f1'].append(metrics.f1_score(expected, predicted, average="weighted"))
 
-    data.target = lambda k: data._target_set[k]
+    # Report
+    print "Build and Validation of {} took {:0.3f} seconds".format(label, time.time()-start)
+    print "Validation scores are as follows:\n"
+    print pd.DataFrame(scores).mean()
+    
+    # Write official estimator to disk
+    estimator = model(**kwargs)
+    estimator.fit(dataset.data, dataset.target)
+    
+    outpath = label.lower().replace(" ", "-") + ".pickle"
+    with open(outpath, 'w') as f:
+        pickle.dump(estimator, f)
 
-    return data
+    print "\nFitted model written to:\n{}".format(os.path.abspath(outpath))
+
